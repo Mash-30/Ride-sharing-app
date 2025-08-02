@@ -2,19 +2,9 @@ pipeline {
     agent any
     
     environment {
-        // Node.js version
         NODE_VERSION = '18'
-        
-        // Docker registry (configure as needed)
-        DOCKER_REGISTRY = 'your-registry.com'
-        
-        // Build tags
         BUILD_TAG = "${env.BUILD_NUMBER}"
         GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-        
-        // Workspace paths
-        CLIENT_DIR = 'client'
-        SERVER_DIR = 'server'
     }
     
     stages {
@@ -34,62 +24,39 @@ pipeline {
             steps {
                 echo "⚙️ Setting up environment..."
                 
-                // Install Node.js
+                // Check if Node.js is available
                 sh '''
-                    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-                    export NVM_DIR="$HOME/.nvm"
-                    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-                    nvm install ${NODE_VERSION}
-                    nvm use ${NODE_VERSION}
-                    node --version
-                    npm --version
+                    if command -v node &> /dev/null; then
+                        echo "Node.js is already installed"
+                        node --version
+                    else
+                        echo "Installing Node.js..."
+                        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+                        sudo apt-get install -y nodejs
+                        node --version
+                    fi
                 '''
                 
-                // Install Docker if not available
+                // Check if Docker is available
                 sh '''
-                    if ! command -v docker &> /dev/null; then
+                    if command -v docker &> /dev/null; then
+                        echo "Docker is already installed"
+                        docker --version
+                    else
                         echo "Installing Docker..."
                         curl -fsSL https://get.docker.com -o get-docker.sh
                         sh get-docker.sh
                         sudo usermod -aG docker $USER
+                        docker --version
                     fi
-                    docker --version
                 '''
-            }
-        }
-        
-        stage('Client Build') {
-            when {
-                anyOf {
-                    changeset "client/**"
-                    changeset "**/*.js"
-                    changeset "**/*.ts"
-                    changeset "**/*.tsx"
-                }
-            }
-            steps {
-                echo "📱 Building client application..."
-                dir(CLIENT_DIR) {
-                    // Install dependencies
-                    sh '''
-                        npm ci --legacy-peer-deps || npm install --legacy-peer-deps
-                    '''
-                    
-                    // Run linting
-                    sh 'npm run lint || echo "Linting failed but continuing..."'
-                    
-                    // Build for web (if needed)
-                    sh '''
-                        npm run web || echo "Web build failed but continuing..."
-                    '''
-                }
             }
         }
         
         stage('Server Dependencies') {
             steps {
                 echo "🔧 Installing server dependencies..."
-                dir(SERVER_DIR) {
+                dir('server') {
                     // Install dependencies for all services
                     sh '''
                         # API Gateway
@@ -131,13 +98,12 @@ pipeline {
         stage('Docker Build') {
             steps {
                 echo "🐳 Building Docker images..."
-                dir(SERVER_DIR) {
+                dir('server') {
                     // Make build script executable
                     sh 'chmod +x build-services.sh'
                     
                     // Build all services
                     sh '''
-                        # Build with error handling
                         if ./build-services.sh; then
                             echo "✅ All Docker images built successfully"
                         else
@@ -152,7 +118,7 @@ pipeline {
         stage('Docker Compose Test') {
             steps {
                 echo "🧪 Testing Docker Compose setup..."
-                dir(SERVER_DIR) {
+                dir('server') {
                     // Test docker-compose configuration
                     sh '''
                         # Validate docker-compose file
@@ -175,70 +141,12 @@ pipeline {
                 }
             }
         }
-        
-        stage('Security Scan') {
-            steps {
-                echo "🔒 Running security scans..."
-                dir(SERVER_DIR) {
-                    // Scan Docker images for vulnerabilities
-                    sh '''
-                        # Scan all built images
-                        for service in api-gateway user-service location-service payment-service ride-service notification-service admin-service analytics-service; do
-                            echo "Scanning ride-sharing-$service:latest"
-                            docker scan --accept-license ride-sharing-$service:latest || echo "Scan failed for $service"
-                        done
-                    '''
-                }
-            }
-        }
-        
-        stage('Push to Registry') {
-            when {
-                branch 'main'
-            }
-            steps {
-                echo "📤 Pushing images to registry..."
-                dir(SERVER_DIR) {
-                    sh '''
-                        # Tag and push images (configure your registry)
-                        for service in api-gateway user-service location-service payment-service ride-service notification-service admin-service analytics-service; do
-                            docker tag ride-sharing-$service:latest $DOCKER_REGISTRY/ride-sharing-$service:$BUILD_TAG
-                            docker tag ride-sharing-$service:latest $DOCKER_REGISTRY/ride-sharing-$service:latest
-                            
-                            # Push to registry (uncomment when registry is configured)
-                            # docker push $DOCKER_REGISTRY/ride-sharing-$service:$BUILD_TAG
-                            # docker push $DOCKER_REGISTRY/ride-sharing-$service:latest
-                        done
-                    '''
-                }
-            }
-        }
-        
-        stage('Deploy to Staging') {
-            when {
-                branch 'main'
-            }
-            steps {
-                echo "🚀 Deploying to staging..."
-                dir(SERVER_DIR) {
-                    sh '''
-                        # Deploy to staging environment
-                        # This would typically involve:
-                        # 1. Updating docker-compose.yml with staging environment variables
-                        # 2. Running docker-compose up -d on staging server
-                        # 3. Running health checks
-                        
-                        echo "Staging deployment completed"
-                    '''
-                }
-            }
-        }
     }
     
     post {
         always {
             echo "🧹 Cleaning up..."
-            dir(SERVER_DIR) {
+            dir('server') {
                 sh '''
                     # Stop any running containers
                     docker-compose down || true
@@ -251,7 +159,6 @@ pipeline {
         
         success {
             echo "✅ Build completed successfully!"
-            // Send success notification
             sh '''
                 echo "🎉 Ride-Sharing App build successful!"
                 echo "🌐 Services will be available on:"
@@ -268,7 +175,6 @@ pipeline {
         
         failure {
             echo "❌ Build failed!"
-            // Send failure notification
             sh '''
                 echo "💥 Ride-Sharing App build failed!"
                 echo "Check the logs above for details."
@@ -276,7 +182,6 @@ pipeline {
         }
         
         cleanup {
-            // Clean workspace
             cleanWs()
         }
     }
